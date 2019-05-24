@@ -24,8 +24,8 @@ input_features:
     -
         name: text
         type: text
-        encoder: parallel_cnn
         level: word
+        encoder: parallel_cnn
 
 output_features:
     -
@@ -54,10 +54,13 @@ With `model_definition.yaml`:
 input_features:
     -
         name: utterance
-        type: sequence
+        type: text
+        level: word
         encoder: rnn
         cell_type: lstm
         reduce_output: null
+        preprocessing:
+          word_format: space
 
 output_features:
     -
@@ -88,12 +91,15 @@ With `model_definition.yaml`:
 input_features:
     -
         name: utterance
-        type: sequence
+        type: text
+        level: word
         encoder: rnn
         cell_type: lstm
         bidirectional: true
         num_layers: 2
         reduce_output: null
+        preprocessing:
+          word_format: space
 
 output_features:
     -
@@ -131,19 +137,25 @@ input_features:
     -
         name: english
         type: text
+        level: word
         encoder: rnn
         cell_type: lstm
         reduce_output: null
+        preprocessing:
+          word_format: english_tokenize
 
 output_features:
     -
         name: italian
         type: text
+        level: word
         decoder: generator
         cell_type: lstm
         attention: bahdanau
         loss:
             type: sampled_softmax_cross_entropy
+        preprocessing:
+          word_format: italian_tokenize
 
 training:
     batch_size: 96
@@ -172,6 +184,7 @@ input_features:
     -
         name: user1
         type: text
+        level: word
         encoder: rnn
         cell_type: lstm
         reduce_output: null
@@ -180,6 +193,7 @@ output_features:
     -
         name: user2
         type: text
+        level: word
         decoder: generator
         cell_type: lstm
         attention: bahdanau
@@ -213,8 +227,8 @@ input_features:
     -
         name: review
         type: text
-        encoder: parallel_cnn
         level: word
+        encoder: parallel_cnn
 
 output_features:
     -
@@ -253,6 +267,87 @@ output_features:
         type: category
 ```
 
+Image Classification (MNIST)
+===
+This is a complete example of training an image classification model on the MNIST 
+dataset.
+
+## Download the MNIST dataset.
+```
+git clone https://github.com/myleott/mnist_png.git
+cd mnist_png/
+tar -xf mnist_png.tar.gz
+cd mnist_png/
+```
+
+## Create train and test CSVs.
+Open python shell in the same directory and run this:
+```
+import os
+for name in ['training', 'testing']:
+    with open('mnist_dataset_{}.csv'.format(name), 'w') as output_file:
+        print('=== creating {} dataset ==='.format(name))
+        output_file.write('image_path,label\n')
+        for i in range(10):
+            path = '{}/{}'.format(name, i)
+            for file in os.listdir(path):
+                if file.endswith(".png"):
+                    output_file.write('{},{}\n'.format(os.path.join(path, file), str(i)))
+
+```
+Now you should have `mnist_dataset_training.csv` and `mnist_dataset_testing.csv`
+containing 60000 and 10000 examples correspondingly and having the following format
+
+| image_path           | label |
+|----------------------|-------|
+| training/0/16585.png |  0    |
+| training/0/24537.png |  0    |
+| training/0/25629.png |  0    |
+
+## Train a model.
+
+From the directory where you have virtual environment with ludwig installed:
+```
+ludwig train \
+  --data_train_csv <full_path_to_mnist_dataset_training_csv> \
+  --data_test_csv <full path to mnist_dataset_test.csv> \
+  --model_definition_file model_definition.yaml
+```
+
+With `model_definition.yaml`:
+
+```yaml
+input_features:
+    -
+        name: image_path
+        type: image
+        encoder: stacked_cnn
+        conv_layers:
+            -
+                num_filters: 32
+                filter_size: 3
+                pool_size: 2
+                pool_stride: 2
+            -
+                num_filters: 64
+                filter_size: 3
+                pool_size: 2
+                pool_stride: 2
+                dropout: true
+        fc_layers:
+            -
+                fc_size: 128
+                dropout: true
+
+output_features:
+    -
+        name: label
+        type: category
+
+training:
+    dropout_rate: 0.4
+```
+
 Image Captioning
 ===
 
@@ -281,6 +376,7 @@ output_features:
     -
         name: caption
         type: text
+        level: word
         decoder: generator
         cell_type: lstm
 ```
@@ -354,13 +450,14 @@ input_features:
     -
         name: question
         type: text
-        encoder: parallel_cnn
         level: word
+        encoder: parallel_cnn
 
 output_features:
     -
         name: answer
         type: text
+        level: word
         decoder: generator
         cell_type: lstm
         loss:
@@ -405,7 +502,8 @@ input_features:
     -
         name: Age
         type: numerical
-        missing_value_strategy: fill_with_mean
+        preprocessing:
+          missing_value_strategy: fill_with_mean
     -
         name: SibSp
         type: numerical
@@ -415,7 +513,8 @@ input_features:
     -
         name: Fare
         type: numerical
-        missing_value_strategy: fill_with_mean
+        preprocessing:
+          missing_value_strategy: fill_with_mean
     -
         name: Embarked
         type: category
@@ -473,6 +572,76 @@ output_features:
 ```
 
 
+Time series forecasting (weather data example)
+===
+
+This example illustrates univariate timeseries forecasting using historical temperature data for Los Angeles.
+
+Dowload and unpack historical hourly weather data available on Kaggle
+https://www.kaggle.com/selfishgene/historical-hourly-weather-data
+
+Run the following python script to prepare the training dataset:
+```
+import pandas as pd
+from ludwig.utils.data_utils import add_sequence_feature_column
+
+df = pd.read_csv(
+    '<PATH_TO_FILE>/temperature.csv',
+    usecols=['Los Angeles']
+).rename(
+    columns={"Los Angeles": "temperature"}
+).fillna(method='backfill').fillna(method='ffill')
+
+# normalize
+df.temperature = ((df.temperature-df.temperature.mean()) /
+                  df.temperature.std())
+
+train_size = int(0.6 * len(df))
+vali_size = int(0.2 * len(df))
+
+# train, validation, test split
+df['split'] = 0
+df.loc[
+    (
+        (df.index.values >= train_size) &
+        (df.index.values < train_size + vali_size)
+    ),
+    ('split')
+] = 1
+df.loc[
+    df.index.values >= train_size + vali_size,
+    ('split')
+] = 2
+
+# prepare timeseries input feature colum
+# (here we are using 20 preceeding values to predict the target)
+add_sequence_feature_column(df, 'temperature', 20)
+df.to_csv('<PATH_TO_FILE>/temperature_la.csv')
+```
+
+```
+ludwig experiment \
+--data_csv <PATH_TO_FILE>/temperature_la.csv \
+  --model_definition_file model_definition.yaml
+```
+
+With `model_definition.yaml`:
+
+```yaml
+input_features:
+    -
+        name: temperature_feature
+        type: timeseries
+        encoder: rnn  
+        embedding_size: 32
+        state_size: 32
+ output_features:
+    -
+        name: temperature
+        type: numerical
+```
+
+
 Movie rating prediction
 ===
 
@@ -481,6 +650,14 @@ Movie rating prediction
 | 1921 |   3240    |     0       | comedy drama       |  8.4   |
 | 1925 |   5700    |     1       | adventure comedy   |  8.3   |
 | 1927 |   9180    |     4       | drama comedy scifi |  8.4   |
+
+```
+ludwig experiment \
+--data_csv movie_ratings.csv \
+  --model_definition_file model_definition.yaml
+```
+
+With `model_definition.yaml`:
 
 ```yaml
 input_features:
@@ -513,6 +690,14 @@ Multi-label classification
 | imagenet/image_000002.jpg | happy dog tie |
 | imagenet/image_000003.jpg | boat water    |
 
+```
+ludwig experiment \
+--data_csv image_data.csv \
+  --model_definition_file model_definition.yaml
+```
+
+With `model_definition.yaml`:
+
 ```yaml
 input_features:
     -
@@ -538,6 +723,14 @@ This example is inspired by the classic paper [Natural Language Processing (Almo
 | My dog likes eating sausage | B-NP I-NP B-VP B-VP B-NP     | PRP NN VBZ VBG NN | O O O O O           |
 | Brutus Killed Julius Caesar | B-NP B-VP B-NP I-NP          | NNP VBD NNP NNP   | B-Per O B-Per I-Per |
 
+```
+ludwig experiment \
+--data_csv nl_data.csv \
+  --model_definition_file model_definition.yaml
+```
+
+With `model_definition.yaml`:
+
 ```yaml
 input_features:
     -
@@ -561,4 +754,123 @@ output_features:
         name: named_entities
         type: sequence
         decoder: tagger
+```
+
+Simple Regression: Fuel Efficiency Prediction
+===
+
+This example replicates the Keras example at https://www.tensorflow.org/tutorials/keras/basic_regression to predict the miles per gallon of a car given its characteristics in the [Auto MPG](https://archive.ics.uci.edu/ml/datasets/auto+mpg) dataset.
+
+|MPG   |Cylinders |Displacement |Horsepower |Weight |Acceleration |ModelYear |Origin |
+|------|----------|-------------|-----------|-------|-------------|----------|-------|
+|18.0  |8         |307.0        |130.0      |3504.0 |12.0         |70        |1      |
+|15.0  |8         |350.0        |165.0      |3693.0 |11.5         |70        |1      |
+|18.0  |8         |318.0        |150.0      |3436.0 |11.0         |70        |1      |
+|16.0  |8         |304.0        |150.0      |3433.0 |12.0         |70        |1      |
+
+```
+ludwig experiment \
+--data_csv auto_mpg.csv \
+  --model_definition_file model_definition.yaml
+```
+
+With `model_definition.yaml`:
+
+```yaml
+training:
+    batch_size: 32
+    epochs: 1000
+    early_stop: 50
+    learning_rate: 0.001
+    optimizer:
+        type: rmsprop
+input_features:
+    -
+        name: Cylinders
+        type: numerical
+    -
+        name: Displacement
+        type: numerical
+    -
+        name: Horsepower
+        type: numerical
+    -
+        name: Weight
+        type: numerical
+    -
+        name: Acceleration
+        type: numerical
+    -
+        name: ModelYear
+        type: numerical
+    -
+        name: Origin
+        type: category
+output_features:
+    -
+        name: MPG
+        type: numerical
+        optimizer:
+            type: mean_squared_error
+        num_fc_layers: 2
+        fc_size: 64
+
+```
+
+Binary Classification: Fraud Transactions Identification
+===
+
+| transaction_id | card_id | customer_id | customer_zipcode | merchant_id | merchant_name | merchant_category | merchant_zipcode | merchant_country | transaction_amount | authorization_response_code | atm_network_xid | cvv_2_response_xflg | fraud_label |
+|----------------|---------|-------------|------------------|-------------|---------------|-------------------|------------------|------------------|--------------------|-----------------------------|-----------------|---------------------|-------------|
+| 469483         | 9003    | 1085        | 23039            | 893         | Wright Group  | 7917              | 91323            | GB               | 1962               | C                           | C               | N                   | 0           |
+| 926515         | 9009    | 1001        | 32218            | 1011        | Mums Kitchen  | 5813              | 10001            | US               | 1643               | C                           | D               | M                   | 1           |
+| 730021         | 9064    | 1174        | 9165             | 916         | Keller        | 7582              | 38332            | DE               | 1184               | D                           | B               | M                   | 0           |
+
+```
+ludwig experiment \
+--data_csv transactions.csv \
+  --model_definition_file model_definition.yaml
+```
+
+With `model_definition.yaml`:
+
+```yaml
+input_features:
+  -
+    name: customer_id
+    type: category
+  -
+    name: card_id
+    type: category
+  -
+    name: merchant_id
+    type: category
+  -
+    name: merchant_category
+    type: category
+  -
+    name: merchant_zipcode
+    type: category
+  -
+    name: transaction_amount
+    type: numerical
+  -
+    name: authorization_response_code
+    type: category
+  -
+    name: atm_network_xid
+    type: category
+  -
+    name: cvv_2_response_xflg
+    type: category
+
+combiner:
+    type: concat
+    num_fc_layers: 1
+    fc_size: 48
+
+output_features:
+  -
+    name: fraud_label
+    type: binary
 ```

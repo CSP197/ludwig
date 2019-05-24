@@ -72,7 +72,8 @@ class CategoryBaseFeature(BaseFeature):
         return np.array(
             column.map(
                 lambda x: (
-                    metadata['str2idx'][x] if x in metadata['str2idx']
+                    metadata['str2idx'][x.strip()]
+                    if x.strip() in metadata['str2idx']
                     else metadata['str2idx'][UNKNOWN_SYMBOL]
                 )
             ),
@@ -307,8 +308,8 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
                             class_similarities.shape[1] > self.num_classes):
                         # keep only the first num_classes rows and columns
                         class_similarities = class_similarities[
-                                          :self.num_classes,
-                                          :self.num_classes
+                                             :self.num_classes,
+                                             :self.num_classes
                                              ]
                     elif (class_similarities.shape[0] < self.num_classes and
                           class_similarities.shape[1] < self.num_classes):
@@ -508,16 +509,16 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
                     'class_similarities_temperature']
 
                 curr_row = 0
-                first_row_lenght = 0
+                first_row_length = 0
                 is_first_row = True
                 for row in similarities:
                     if is_first_row:
-                        first_row_lenght = len(row)
+                        first_row_length = len(row)
                         is_first_row = False
                         curr_row += 1
                     else:
-                        curr_row_lenght = len(row)
-                        if curr_row_lenght != first_row_lenght:
+                        curr_row_length = len(row)
+                        if curr_row_length != first_row_length:
                             raise ValueError(
                                 'The length of row {} of the class_similarities '
                                 'of {} is {}, different from the length of '
@@ -525,13 +526,13 @@ class CategoryOutputFeature(CategoryBaseFeature, OutputFeature):
                                 'the same length.'.format(
                                     curr_row,
                                     output_feature['name'],
-                                    curr_row_lenght,
-                                    first_row_lenght
+                                    curr_row_length,
+                                    first_row_length
                                 )
                             )
                         else:
                             curr_row += 1
-                all_rows_length = first_row_lenght
+                all_rows_length = first_row_length
 
                 if all_rows_length != len(similarities):
                     raise ValueError(

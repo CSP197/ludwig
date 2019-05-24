@@ -26,6 +26,7 @@ from pprint import pformat
 
 import yaml
 
+from ludwig.contrib import contrib_command
 from ludwig.data.preprocessing import preprocess_for_training
 from ludwig.features.feature_registries import input_type_registry
 from ludwig.features.feature_registries import output_type_registry
@@ -33,6 +34,7 @@ from ludwig.globals import LUDWIG_VERSION, set_on_master, is_on_master
 from ludwig.globals import TRAIN_SET_METADATA_FILE_NAME
 from ludwig.models.model import Model
 from ludwig.models.model import load_model_and_definition
+from ludwig.models.modules.measure_modules import get_best_function
 from ludwig.utils.data_utils import save_json
 from ludwig.utils.defaults import default_random_seed
 from ludwig.utils.defaults import merge_with_defaults
@@ -46,6 +48,10 @@ from ludwig.utils.print_utils import print_ludwig
 def full_train(
         model_definition,
         model_definition_file=None,
+        data_df=None,
+        data_train_df=None,
+        data_validation_df=None,
+        data_test_df=None,
         data_csv=None,
         data_train_csv=None,
         data_validation_csv=None,
@@ -64,6 +70,7 @@ def full_train(
         skip_save_log=False,
         skip_save_processed_input=False,
         output_directory='results',
+        should_close_session=True,
         gpus=None,
         gpu_fraction=1.0,
         use_horovod=False,
@@ -74,6 +81,10 @@ def full_train(
     """*full_train* defines the entire training procedure used by Ludwig's
     internals. Requires most of the parameters that are taken into the model.
     Builds a full ludwig model and performs the training.
+    :param data_test_df:
+    :param data_df:
+    :param data_train_df:
+    :param data_validation_df:
     :param model_definition: Model definition which defines the different
            parameters of the model, features, preprocessing and training.
     :type model_definition: Dictionary
@@ -165,7 +176,7 @@ def full_train(
     # set input features defaults
     if model_definition_file is not None:
         with open(model_definition_file, 'r') as def_file:
-            model_definition = merge_with_defaults(yaml.load(def_file))
+            model_definition = merge_with_defaults(yaml.safe_load(def_file))
     else:
         model_definition = merge_with_defaults(model_definition)
 
@@ -222,13 +233,12 @@ def full_train(
         logging.info('\n')
 
     # preprocess
-    (
-        training_set,
-        validation_set,
-        test_set,
-        train_set_metadata
-    ) = preprocess_for_training(
+    preprocessed_data = preprocess_for_training(
         model_definition,
+        data_df=data_df,
+        data_train_df=data_train_df,
+        data_validation_df=data_validation_df,
+        data_test_df=data_test_df,
         data_csv=data_csv,
         data_train_csv=data_train_csv,
         data_validation_csv=data_validation_csv,
@@ -242,16 +252,36 @@ def full_train(
         preprocessing_params=model_definition['preprocessing'],
         random_seed=random_seed
     )
+
+    (training_set,
+     validation_set,
+     test_set,
+     train_set_metadata) = preprocessed_data
+
     if is_on_master():
         logging.info('Training set: {0}'.format(training_set.size))
-        logging.info('Validation set: {0}'.format(validation_set.size))
-        logging.info('Test set: {0}'.format(test_set.size))
+        if validation_set is not None:
+            logging.info('Validation set: {0}'.format(validation_set.size))
+        if test_set is not None:
+            logging.info('Test set: {0}'.format(test_set.size))
 
     # update model definition with metadata properties
     update_model_definition_with_metadata(
         model_definition,
         train_set_metadata
     )
+
+    if is_on_master():
+        if not skip_save_model:
+            # save train set metadata
+            os.makedirs(model_dir, exist_ok=True)
+            save_json(
+                os.path.join(
+                    model_dir,
+                    TRAIN_SET_METADATA_FILE_NAME
+                ),
+                train_set_metadata
+            )
 
     # run the experiment
     model, result = train(
@@ -271,56 +301,60 @@ def full_train(
         random_seed=random_seed,
         debug=debug
     )
+
     train_trainset_stats, train_valisest_stats, train_testset_stats = result
-    model.close_session()
+    train_stats = {
+        'train': train_trainset_stats,
+        'validation': train_valisest_stats,
+        'test': train_testset_stats
+    }
+
+    if should_close_session:
+        model.close_session()
 
     if is_on_master():
         # save training and test statistics
-        save_json(
-            training_stats_fn,
-            {
-                'train': train_trainset_stats,
-                'validation': train_valisest_stats,
-                'test': train_testset_stats
-            }
-        )
-
-        if not skip_save_model:
-            # save train set metadata
-            save_json(
-                os.path.join(
-                    model_dir,
-                    TRAIN_SET_METADATA_FILE_NAME
-                ),
-                train_set_metadata
-            )
+        save_json(training_stats_fn, train_stats)
 
     # grab the results of the model with highest validation test performance
     validation_field = model_definition['training']['validation_field']
     validation_measure = model_definition['training']['validation_measure']
     validation_field_result = train_valisest_stats[validation_field]
-    epoch_max_vali_measure, max_vali_measure = max(
-        enumerate(validation_field_result[validation_measure]),
-        key=lambda pair: pair[1]
-    )
-    max_vali_measure_epoch_test_measure = train_testset_stats[validation_field][
-        validation_measure][epoch_max_vali_measure]
 
+    best_function = get_best_function(validation_measure)
     # results of the model with highest validation test performance
-    if is_on_master():
-        logging.info(
-            'Best validation model epoch:'.format(epoch_max_vali_measure + 1)
+    if is_on_master() and validation_set is not None:
+        epoch_best_vali_measure, best_vali_measure = best_function(
+            enumerate(validation_field_result[validation_measure]),
+            key=lambda pair: pair[1]
         )
         logging.info(
-            'Best validation model {0} on validation set {1}: {2}'.format(
-                validation_measure, validation_field, max_vali_measure
+            'Best validation model epoch:'.format(epoch_best_vali_measure+1)
+        )
+        logging.info(
+           'Best validation model {0} on validation set {1}: {2}'.format(
+               validation_measure, validation_field, best_vali_measure
+           ))
+        if test_set is not None:
+            best_vali_measure_epoch_test_measure = train_testset_stats[
+                validation_field][validation_measure][epoch_best_vali_measure]
+
+            logging.info('Best validation model {0} on test set {1}: '
+                         '{2}'.format(validation_measure,
+                                      validation_field,
+                                      best_vali_measure_epoch_test_measure
             ))
-        logging.info('Best validation model {0} on test set {1}: {2}'.format(
-            validation_measure, validation_field,
-            max_vali_measure_epoch_test_measure
-        ))
         logging.info('\nFinished: {0}_{1}'.format(experiment_name, model_name))
         logging.info('Saved to: {0}'.format(experiment_dir_name))
+
+    contrib_command("train_save", experiment_dir_name)
+
+    return (model,
+            preprocessed_data,
+            experiment_dir_name,
+            train_stats,
+            model_definition
+            )
 
 
 def train(
@@ -398,6 +432,7 @@ def train(
         # Build model
         if is_on_master():
             print_boxed('BUILDING MODEL', print_fun=logging.debug)
+
         model = Model(
             model_definition['input_features'],
             model_definition['output_features'],
@@ -408,6 +443,8 @@ def train(
             random_seed=random_seed,
             debug=debug
         )
+
+    contrib_command("train_model", model, model_definition, model_load_path)
 
     # Train model
     if is_on_master():
@@ -614,7 +651,7 @@ def cli(sys_argv):
     model_definition.add_argument(
         '-md',
         '--model_definition',
-        type=yaml.load,
+        type=yaml.safe_load,
         help='model definition'
     )
     model_definition.add_argument(
@@ -730,4 +767,5 @@ def cli(sys_argv):
 
 
 if __name__ == '__main__':
+    contrib_command("train", *sys.argv)
     cli(sys.argv[1:])

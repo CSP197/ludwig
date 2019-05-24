@@ -15,7 +15,7 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
 setup(
     name='ludwig',
 
-    version='0.1.0',
+    version='0.1.2',
 
     description='A deep learning experimentation toolbox',
     long_description=long_description,
@@ -46,7 +46,7 @@ setup(
                       'scikit-learn',
                       'scikit-image==0.14.2',
                       'seaborn>=0.7',
-                      'spacy>=2.0',
+                      'spacy>=2.1',
                       'tqdm',
                       'tabulate>=0.7',
                       'tensorflow==1.13.1',
